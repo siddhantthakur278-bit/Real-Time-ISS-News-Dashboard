@@ -1,5 +1,5 @@
 // ISS API service
-// Robust version for both local dev and production (Vercel)
+// Uses server-side Vercel API routes to bypass all CORS/Mixed Content issues
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -21,57 +21,39 @@ const fetchWithRetry = async (url, retries = 3) => {
 };
 
 export const fetchISSLocation = async () => {
-  // Primary: WhereTheISS.at (HTTPS native)
-  // We use AllOrigins proxy for production to guarantee bypass of CORS on Vercel
-  const PROXY = 'https://api.allorigins.win/get?url=';
-  const TARGET = 'https://api.wheretheiss.at/v1/satellites/25544';
-  
   try {
-    const res = await fetch(`${PROXY}${encodeURIComponent(TARGET)}`);
-    const json = await res.json();
-    const data = JSON.parse(json.contents);
+    // Calling our own serverless function which handles the external API call
+    const data = await fetchWithRetry('/api/iss-now');
     
     return {
-      latitude: parseFloat(data.latitude),
-      longitude: parseFloat(data.longitude),
+      latitude: parseFloat(data.iss_position.latitude),
+      longitude: parseFloat(data.iss_position.longitude),
       timestamp: data.timestamp,
-      velocity: parseFloat(data.velocity),
+      velocity: null, // open-notify doesn't provide velocity
     };
   } catch (err) {
-    console.warn('Primary ISS fetch failed, trying direct fallback:', err.message);
+    console.error('ISS fetch failed via serverless function:', err.message);
+    // Silent fallback to direct wheretheiss (HTTPS native) if our own API fails
     try {
-      const data = await fetchWithRetry(TARGET);
-      return {
-        latitude: parseFloat(data.latitude),
-        longitude: parseFloat(data.longitude),
-        timestamp: data.timestamp,
-        velocity: parseFloat(data.velocity),
-      };
+       const fb = await fetchWithRetry('https://api.wheretheiss.at/v1/satellites/25544');
+       return {
+         latitude: parseFloat(fb.latitude),
+         longitude: parseFloat(fb.longitude),
+         timestamp: fb.timestamp,
+         velocity: parseFloat(fb.velocity),
+       };
     } catch (e) {
-      // Last resort: open-notify (might be blocked by mixed content but worth a shot)
-      const data = await fetchWithRetry('https://api.allorigins.win/get?url=http://api.open-notify.org/iss-now.json');
-      const parsed = JSON.parse(data.contents);
-      return {
-        latitude: parseFloat(parsed.iss_position.latitude),
-        longitude: parseFloat(parsed.iss_position.longitude),
-        timestamp: parsed.timestamp,
-        velocity: null,
-      };
+       throw err;
     }
   }
 };
 
 export const fetchAstronauts = async () => {
-  const PROXY = 'https://api.allorigins.win/get?url=';
-  const TARGET = 'http://api.open-notify.org/astros.json';
-  
   try {
-    const res = await fetch(`${PROXY}${encodeURIComponent(TARGET)}`);
-    const json = await res.json();
-    const data = JSON.parse(json.contents);
+    const data = await fetchWithRetry('/api/astros');
     return { count: data.number, people: data.people };
   } catch (e) {
-    console.warn('Astronaut live fetch failed, using fallback crew data');
+    console.warn('Astronaut fetch failed via serverless function, using fallback');
     return {
       count: 12,
       people: [
