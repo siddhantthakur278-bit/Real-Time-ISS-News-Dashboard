@@ -1,8 +1,5 @@
 // ISS API service
-// Dev: uses Vite proxy to bypass CORS for open-notify.org
-// Production: uses wheretheiss.at (HTTPS native, no CORS issues)
-
-const isDev = import.meta.env.DEV;
+// Robust version for both local dev and production (Vercel)
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -11,7 +8,6 @@ const fetchWithRetry = async (url, retries = 3) => {
     try {
       const res = await fetch(url);
       if (res.status === 429) {
-        console.warn(`Rate limited, waiting ${(i + 1) * 3}s...`);
         await delay((i + 1) * 3000);
         continue;
       }
@@ -25,47 +21,57 @@ const fetchWithRetry = async (url, retries = 3) => {
 };
 
 export const fetchISSLocation = async () => {
-  // In dev mode, use Vite proxy -> open-notify.org
-  if (isDev) {
+  // Primary: WhereTheISS.at (HTTPS native)
+  // We use AllOrigins proxy for production to guarantee bypass of CORS on Vercel
+  const PROXY = 'https://api.allorigins.win/get?url=';
+  const TARGET = 'https://api.wheretheiss.at/v1/satellites/25544';
+  
+  try {
+    const res = await fetch(`${PROXY}${encodeURIComponent(TARGET)}`);
+    const json = await res.json();
+    const data = JSON.parse(json.contents);
+    
+    return {
+      latitude: parseFloat(data.latitude),
+      longitude: parseFloat(data.longitude),
+      timestamp: data.timestamp,
+      velocity: parseFloat(data.velocity),
+    };
+  } catch (err) {
+    console.warn('Primary ISS fetch failed, trying direct fallback:', err.message);
     try {
-      const data = await fetchWithRetry('/iss-now');
+      const data = await fetchWithRetry(TARGET);
       return {
-        latitude: parseFloat(data.iss_position.latitude),
-        longitude: parseFloat(data.iss_position.longitude),
+        latitude: parseFloat(data.latitude),
+        longitude: parseFloat(data.longitude),
         timestamp: data.timestamp,
-        velocity: null,
+        velocity: parseFloat(data.velocity),
       };
     } catch (e) {
-      console.warn('Dev proxy failed, trying direct API:', e.message);
+      // Last resort: open-notify (might be blocked by mixed content but worth a shot)
+      const data = await fetchWithRetry('https://api.allorigins.win/get?url=http://api.open-notify.org/iss-now.json');
+      const parsed = JSON.parse(data.contents);
+      return {
+        latitude: parseFloat(parsed.iss_position.latitude),
+        longitude: parseFloat(parsed.iss_position.longitude),
+        timestamp: parsed.timestamp,
+        velocity: null,
+      };
     }
   }
-
-  // Production fallback (or dev fallback): wheretheiss.at supports HTTPS natively
-  const data = await fetchWithRetry('https://api.wheretheiss.at/v1/satellites/25544');
-  return {
-    latitude: parseFloat(data.latitude),
-    longitude: parseFloat(data.longitude),
-    timestamp: data.timestamp,
-    velocity: parseFloat(data.velocity),
-  };
 };
 
 export const fetchAstronauts = async () => {
-  // In dev mode, use Vite proxy -> open-notify.org
-  if (isDev) {
-    try {
-      const data = await fetchWithRetry('/astros');
-      return { count: data.number, people: data.people };
-    } catch (e) {
-      console.warn('Dev proxy failed for astros:', e.message);
-    }
-  }
-
-  // Production: open-notify.org astros.json works over HTTPS directly
+  const PROXY = 'https://api.allorigins.win/get?url=';
+  const TARGET = 'http://api.open-notify.org/astros.json';
+  
   try {
-    const data = await fetchWithRetry('https://api.open-notify.org/astros.json');
+    const res = await fetch(`${PROXY}${encodeURIComponent(TARGET)}`);
+    const json = await res.json();
+    const data = JSON.parse(json.contents);
     return { count: data.number, people: data.people };
-  } catch {
+  } catch (e) {
+    console.warn('Astronaut live fetch failed, using fallback crew data');
     return {
       count: 12,
       people: [
